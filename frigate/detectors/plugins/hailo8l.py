@@ -86,6 +86,7 @@ class HailoAsyncInference:
         input_type: Optional[str] = None,
         output_type: Optional[Dict[str, str]] = None,
         send_original_frame: bool = False,
+        multi_process_service: bool = False,
     ) -> None:
         # when importing hailo it activates the driver
         # which leaves processes running even though it may not be used.
@@ -104,6 +105,10 @@ class HailoAsyncInference:
 
         params = VDevice.create_params()
         params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+        if multi_process_service:
+            params.multi_process_service = True
+            params.group_id = "SHARED"
+            logger.info("Using HailoRT multi-process service (group_id=SHARED)")
 
         self.hef = HEF(hef_path)
         self.target = VDevice(params)
@@ -206,7 +211,17 @@ class HailoDetector(DetectionApi):
 
     def __init__(self, detector_config: "HailoDetectorConfig"):
         global ARCH
-        ARCH = detect_hailo_arch()
+        self.multi_process_service = detector_config.multi_process_service
+        if detector_config.hailo_arch:
+            ARCH = detector_config.hailo_arch
+            logger.info(f"Using configured Hailo architecture: {ARCH}")
+        else:
+            if self.multi_process_service:
+                raise ValueError(
+                    "hailo_arch must be set when multi_process_service is true "
+                    "(auto-detection requires direct device access)"
+                )
+            ARCH = detect_hailo_arch()
         self.cache_dir = MODEL_CACHE_DIR
         self.device_type = detector_config.device
         self.model_height = (
@@ -254,6 +269,7 @@ class HailoDetector(DetectionApi):
                 self.input_store,
                 self.response_store,
                 self.batch_size,
+                multi_process_service=self.multi_process_service,
             )
             self.input_shape = self.inference_engine.get_input_shape()
             logger.debug(f"[INIT] Model input shape: {self.input_shape}")
@@ -421,4 +437,14 @@ class HailoDetectorConfig(BaseDetectorConfig):
         default="PCIe",
         title="Device Type",
         description="The device to use for Hailo inference (e.g. 'PCIe', 'M.2').",
+    )
+    multi_process_service: bool = Field(
+        default=False,
+        title="Multi-Process Service",
+        description="Use HailoRT multi-process service for shared device access. Requires hailort_service running externally.",
+    )
+    hailo_arch: Optional[str] = Field(
+        default=None,
+        title="Hailo Architecture",
+        description="Hailo device architecture ('hailo8' or 'hailo8l'). Auto-detected when multi_process_service is false. Must be set explicitly when multi_process_service is true.",
     )
