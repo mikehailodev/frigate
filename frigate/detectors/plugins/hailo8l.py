@@ -108,7 +108,7 @@ class HailoAsyncInference:
         if multi_process_service:
             params.multi_process_service = True
             params.group_id = "SHARED"
-            logger.info("Using HailoRT multi-process service (group_id=SHARED)")
+            logger.info(f"Using HailoRT multi-process service (group_id=SHARED, address={os.environ.get('HAILORT_SERVICE_ADDRESS', 'default')})")
 
         self.hef = HEF(hef_path)
         self.target = VDevice(params)
@@ -212,6 +212,8 @@ class HailoDetector(DetectionApi):
     def __init__(self, detector_config: "HailoDetectorConfig"):
         global ARCH
         self.multi_process_service = detector_config.multi_process_service
+        if self.multi_process_service:
+            os.environ["HAILORT_SERVICE_ADDRESS"] = detector_config.service_address
         if detector_config.hailo_arch:
             ARCH = detector_config.hailo_arch
             logger.info(f"Using configured Hailo architecture: {ARCH}")
@@ -447,4 +449,9 @@ class HailoDetectorConfig(BaseDetectorConfig):
         default=None,
         title="Hailo Architecture",
         description="Hailo device architecture ('hailo8' or 'hailo8l'). Auto-detected when multi_process_service is false. Must be set explicitly when multi_process_service is true.",
+    )
+    service_address: str = Field(
+        default="unix:/share/hailo/hailort_service.sock",
+        title="Service Address",
+        description="HailoRT service socket address. Only used when multi_process_service is true.",
     )
