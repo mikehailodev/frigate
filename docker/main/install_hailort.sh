@@ -15,7 +15,7 @@ elif [[ "${TARGETARCH}" == "arm64" ]]; then
     tmpdir=$(mktemp -d)
     dpkg-deb -x /tmp/hailort.deb "$tmpdir"
     cp "$tmpdir"/usr/lib/libhailort.so* /usr/local/lib/
-    cp "$tmpdir"/usr/local/bin/hailortcli /usr/local/bin/
+    cp "$tmpdir"/usr/bin/hailortcli /usr/local/bin/
     ldconfig
     rm -rf "$tmpdir" /tmp/hailort.deb
 fi
