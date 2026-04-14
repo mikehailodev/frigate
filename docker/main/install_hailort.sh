@@ -25,4 +25,9 @@ elif [[ "${TARGETARCH}" == "arm64" ]]; then
     rm -rf "$tmpdir" /tmp/hailort.deb
 fi
 
-wget -P /wheels/ "https://github.com/frigate-nvr/hailort/releases/download/v${hailo_version}/hailort-${hailo_version}-cp311-cp311-linux_${arch}.whl"
+if [[ "${TARGETARCH}" == "arm64" ]]; then
+    # arm64: use official Hailo wheel (built with multi-process service support)
+    wget -P /wheels/ "https://github.com/mikehailodev/frigate/releases/download/hailort-4.23.0-service/hailort-${hailo_version}-cp311-cp311-linux_aarch64.whl"
+else
+    wget -P /wheels/ "https://github.com/frigate-nvr/hailort/releases/download/v${hailo_version}/hailort-${hailo_version}-cp311-cp311-linux_${arch}.whl"
+fi

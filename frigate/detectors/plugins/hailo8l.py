@@ -108,7 +108,19 @@ class HailoAsyncInference:
         if multi_process_service:
             params.multi_process_service = True
             params.group_id = "SHARED"
-            logger.info(f"Using HailoRT multi-process service (group_id=SHARED, address={os.environ.get('HAILORT_SERVICE_ADDRESS', 'default')})")
+            svc_addr = os.environ.get('HAILORT_SERVICE_ADDRESS', 'default')
+            logger.info(f"Using HailoRT multi-process service (group_id=SHARED, address={svc_addr})")
+            # Diagnostic: check libhailort size (official ~16MB has service support, frigate-nvr ~8MB does not)
+            for lib_path in ["/usr/local/lib/libhailort.so.4.23.0", "/usr/lib/libhailort.so.4.23.0"]:
+                if os.path.exists(lib_path):
+                    size_mb = os.path.getsize(lib_path) / (1024 * 1024)
+                    logger.info(f"  libhailort: {lib_path} ({size_mb:.1f} MB)")
+            # Diagnostic: check socket exists
+            sock_path = svc_addr.replace("unix:", "") if svc_addr.startswith("unix:") else svc_addr
+            if os.path.exists(sock_path):
+                logger.info(f"  Socket exists: {sock_path}")
+            else:
+                logger.warning(f"  Socket NOT FOUND: {sock_path} — is the service add-on running?")
 
         self.hef = HEF(hef_path)
         self.target = VDevice(params)
