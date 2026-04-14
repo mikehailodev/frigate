@@ -122,8 +122,9 @@ class HailoAsyncInference:
             else:
                 logger.warning(f"  Socket NOT FOUND: {sock_path} — is the service add-on running?")
 
-        self.hef = HEF(hef_path)
+        logger.info(f"  VDevice params: multi_process_service={params.multi_process_service}, group_id={params.group_id}, scheduling={params.scheduling_algorithm}")
         self.target = VDevice(params)
+        self.hef = HEF(hef_path)
         self.infer_model = self.target.create_infer_model(hef_path)
         self.infer_model.set_batch_size(batch_size)
 
