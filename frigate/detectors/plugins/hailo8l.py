@@ -468,3 +468,14 @@ class HailoDetectorConfig(BaseDetectorConfig):
         title="Service Address",
         description="HailoRT service socket address. Only used when multi_process_service is true.",
     )
+
+    def model_post_init(self, __context) -> None:
+        """Set HAILORT_SERVICE_ADDRESS early so it's inherited by forked child processes.
+
+        libhailort caches the service address at first import. If get_hailo_temps()
+        imports hailo_platform before the detector subprocess forks, the child inherits
+        the cached (wrong) address. Setting it here during config parsing ensures it's
+        in the environment before any hailo imports or forks.
+        """
+        if self.multi_process_service:
+            os.environ["HAILORT_SERVICE_ADDRESS"] = self.service_address
