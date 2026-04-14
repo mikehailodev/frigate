@@ -652,6 +652,14 @@ def get_jetson_stats() -> Optional[dict[int, dict]]:
 
 def get_hailo_temps() -> dict[str, float]:
     """Get temperatures for Hailo devices."""
+    import glob
+
+    # Device.scan() opens /dev/hailo0 directly (bypasses hailort_service).
+    # When using multi-process service mode the Frigate container has no
+    # /dev/hailo* mapped, so skip early to avoid noisy libhailort errors.
+    if not glob.glob("/dev/hailo*"):
+        return {}
+
     try:
         from hailo_platform import Device
     except ModuleNotFoundError:
