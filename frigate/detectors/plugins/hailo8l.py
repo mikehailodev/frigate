@@ -1,5 +1,7 @@
+import glob
 import logging
 import os
+import re
 import subprocess
 import threading
 import urllib.request
@@ -73,6 +75,50 @@ def detect_hailo_arch():
     except Exception as e:
         logger.error(f"Inference error: {e}")
         return None
+
+
+def check_hailort_version_match() -> Optional[str]:
+    """Verify kernel module and userspace library versions match exactly.
+
+    HailoRT requires the kernel driver (hailo_pci) and userspace library
+    (libhailort) to be the exact same version. A mismatch causes failures.
+
+    Returns None if versions match (or check is skipped), or an error message string.
+    """
+    # Read kernel module version from sysfs
+    kernel_version = None
+    try:
+        with open("/sys/module/hailo_pci/version") as f:
+            kernel_version = f.read().strip()
+    except (FileNotFoundError, PermissionError):
+        logger.warning(
+            "Cannot read /sys/module/hailo_pci/version — skipping version check"
+        )
+        return None
+
+    # Find libhailort version from .so filename
+    lib_version = None
+    for path in glob.glob("/usr/lib/libhailort.so.*.*.*") + glob.glob(
+        "/usr/local/lib/libhailort.so.*.*.*"
+    ):
+        match = re.search(r"libhailort\.so\.(\d+\.\d+\.\d+)", path)
+        if match:
+            lib_version = match.group(1)
+            break
+
+    if not lib_version:
+        logger.warning("Cannot determine libhailort version — skipping version check")
+        return None
+
+    if kernel_version != lib_version:
+        return (
+            f"HailoRT version mismatch: kernel driver (hailo_pci) is v{kernel_version} "
+            f"but libhailort is v{lib_version}. HailoRT requires an exact version match. "
+            f"Ensure HAOS and this add-on use the same HailoRT version."
+        )
+
+    logger.info(f"HailoRT version match confirmed: v{kernel_version}")
+    return None
 
 
 # ----------------- HailoAsyncInference Class ----------------- #
@@ -225,8 +271,22 @@ class HailoDetector(DetectionApi):
     def __init__(self, detector_config: "HailoDetectorConfig"):
         global ARCH
         self.multi_process_service = detector_config.multi_process_service
+        self.disabled = False
         if self.multi_process_service:
             os.environ["HAILORT_SERVICE_ADDRESS"] = detector_config.service_address
+        version_error = check_hailort_version_match()
+        if version_error:
+            logger.critical("=" * 60)
+            logger.critical("HAILO DETECTOR DISABLED")
+            logger.critical(version_error)
+            logger.critical(
+                "Hailo detection is disabled. Recording and streaming "
+                "will continue but no objects will be detected. "
+                "Update HAOS or this add-on so versions match, then restart."
+            )
+            logger.critical("=" * 60)
+            self.disabled = True
+            return
         if detector_config.hailo_arch:
             ARCH = detector_config.hailo_arch
             logger.info(f"Using configured Hailo architecture: {ARCH}")
@@ -364,6 +424,9 @@ class HailoDetector(DetectionApi):
         return cached_model_path
 
     def detect_raw(self, tensor_input):
+        if self.disabled:
+            return np.zeros((20, 6), dtype=np.float32)
+
         tensor_input = self.preprocess(tensor_input)
 
         if isinstance(tensor_input, np.ndarray) and len(tensor_input.shape) == 3:
