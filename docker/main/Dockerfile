@@ -200,8 +200,15 @@ RUN pip3 wheel --wheel-dir=/wheels -r /requirements-wheels.txt && \
         pip3 wheel --wheel-dir=/wheels -r /requirements-dev.txt; \
     fi
 
-# Install HailoRT & Wheels
+# Install HailoRT (dual: 4.x for Hailo-8/8L, 5.x for Hailo-10H)
+ARG HAILO4_DEB_URL=""
+ARG HAILO4_WHL_URL=""
+ARG HAILO5_DEB_URL=""
+ARG HAILO5_WHL_URL=""
 RUN --mount=type=bind,source=docker/main/install_hailort.sh,target=/deps/install_hailort.sh \
+    --mount=type=bind,source=docker/main/hailort_artifacts,target=/deps/hailort_artifacts \
+    HAILO4_DEB_URL="${HAILO4_DEB_URL}" HAILO4_WHL_URL="${HAILO4_WHL_URL}" \
+    HAILO5_DEB_URL="${HAILO5_DEB_URL}" HAILO5_WHL_URL="${HAILO5_WHL_URL}" \
     /deps/install_hailort.sh
 
 # Collect deps in a single layer
