@@ -1,0 +1,608 @@
+import glob
+import logging
+import os
+import re
+import sys
+import threading
+import urllib.request
+from functools import partial
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+from pydantic import ConfigDict, Field
+from typing_extensions import Literal
+
+from frigate.const import MODEL_CACHE_DIR
+from frigate.detectors.detection_api import DetectionApi
+from frigate.detectors.detector_config import (
+    BaseDetectorConfig,
+)
+from frigate.object_detection.util import RequestStore, ResponseStore
+
+logger = logging.getLogger(__name__)
+
+
+# ----------------- Utility Functions ----------------- #
+
+
+def preprocess_tensor(image: np.ndarray, model_w: int, model_h: int) -> np.ndarray:
+    """
+    Resize an image with unchanged aspect ratio using padding.
+    Assumes input image shape is (H, W, 3).
+    """
+    if image.ndim == 4 and image.shape[0] == 1:
+        image = image[0]
+
+    h, w = image.shape[:2]
+    scale = min(model_w / w, model_h / h)
+    new_w, new_h = int(w * scale), int(h * scale)
+    resized_image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    padded_image = np.full((model_h, model_w, 3), 114, dtype=image.dtype)
+    x_offset = (model_w - new_w) // 2
+    y_offset = (model_h - new_h) // 2
+    padded_image[y_offset : y_offset + new_h, x_offset : x_offset + new_w] = (
+        resized_image
+    )
+    return padded_image
+
+
+# ----------------- Global Constants ----------------- #
+DETECTOR_KEY = "hailo"
+ARCH = None
+
+# Hailo-8 / Hailo-8L defaults (HailoRT 4.x)
+H8_DEFAULT_MODEL = "yolov6n.hef"
+H8L_DEFAULT_MODEL = "yolov6n.hef"
+H8_DEFAULT_URL = "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo8/yolov6n.hef"
+H8L_DEFAULT_URL = "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo8l/yolov6n.hef"
+
+# Hailo-10H defaults (HailoRT 5.x)
+H10H_DEFAULT_MODEL = "yolov8m.hef"
+H10H_DEFAULT_URL = "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.3.0/hailo10h/yolov8m.hef"
+
+# PCI device IDs
+HAILO_VENDOR_ID = "0x1e60"
+HAILO8_DEVICE_ID = "0x2864"
+HAILO10H_DEVICE_ID = "0x45c4"
+
+# HailoRT Python package paths
+HAILORT4_PATH = "/opt/hailort4"
+HAILORT5_PATH = "/opt/hailort5"
+
+
+def detect_hailo_hardware() -> Optional[Tuple[str, str]]:
+    """Detect Hailo hardware by scanning PCI device IDs in sysfs.
+
+    Returns a tuple of (hardware_family, python_package_path) or None if no Hailo device found.
+    - ("hailo8_family", "/opt/hailort4") for Hailo-8 or Hailo-8L
+    - ("hailo10h", "/opt/hailort5") for Hailo-10H
+    """
+    pci_devices_path = Path("/sys/bus/pci/devices")
+    if not pci_devices_path.exists():
+        logger.warning("Cannot access /sys/bus/pci/devices — PCI scan unavailable")
+        return None
+
+    for device_dir in pci_devices_path.iterdir():
+        try:
+            vendor = (device_dir / "vendor").read_text().strip()
+            device_id = (device_dir / "device").read_text().strip()
+        except (OSError, IOError):
+            continue
+
+        if vendor == HAILO_VENDOR_ID:
+            if device_id == HAILO8_DEVICE_ID:
+                logger.info(
+                    f"Detected Hailo-8/8L device (PCI {device_dir.name})"
+                )
+                return ("hailo8_family", HAILORT4_PATH)
+            elif device_id == HAILO10H_DEVICE_ID:
+                logger.info(
+                    f"Detected Hailo-10H device (PCI {device_dir.name})"
+                )
+                return ("hailo10h", HAILORT5_PATH)
+
+    logger.warning("No Hailo PCI device found")
+    return None
+
+
+def setup_hailort_path(python_path: str) -> None:
+    """Insert the correct HailoRT Python package path into sys.path.
+
+    Must be called BEFORE importing hailo_platform so the dynamic linker
+    resolves the correct libhailort.so via SONAME.
+    """
+    if python_path not in sys.path:
+        sys.path.insert(0, python_path)
+        logger.info(f"HailoRT Python path set to: {python_path}")
+
+
+def detect_hailo_arch(hardware_family: str) -> Optional[str]:
+    """Detect specific Hailo architecture after hailo_platform is available.
+
+    For hailo8_family: distinguishes hailo8 vs hailo8l via device properties.
+    For hailo10h: returns "hailo10h" directly.
+    """
+    if hardware_family == "hailo10h":
+        return "hailo10h"
+
+    # For Hailo-8 family, query the device to distinguish 8 vs 8L
+    try:
+        from hailo_platform import VDevice
+
+        params = VDevice.create_params()
+        target = VDevice(params)
+        physical_devices = target.get_physical_devices()
+        if physical_devices:
+            arch = str(physical_devices[0].get_architecture())
+            target.release()
+            if "HAILO8L" in arch:
+                return "hailo8l"
+            elif "HAILO8" in arch:
+                return "hailo8"
+        target.release()
+    except Exception as e:
+        logger.warning(f"Could not detect Hailo-8 sub-architecture: {e}")
+
+    # Fallback: assume hailo8l (more common in HA context)
+    return "hailo8l"
+
+
+def check_hailort_version_match(hardware_family: str) -> Optional[str]:
+    """Verify kernel module and userspace library versions match.
+
+    Returns None if versions match (or check is skipped), or an error message string.
+    """
+    if hardware_family == "hailo10h":
+        module_path = "/sys/module/hailo1x_pci/version"
+        module_name = "hailo1x_pci"
+        lib_pattern = "libhailort.so.5.*.*"
+    else:
+        module_path = "/sys/module/hailo_pci/version"
+        module_name = "hailo_pci"
+        lib_pattern = "libhailort.so.4.*.*"
+
+    # Read kernel module version from sysfs
+    kernel_version = None
+    try:
+        with open(module_path) as f:
+            kernel_version = f.read().strip()
+    except (FileNotFoundError, PermissionError):
+        logger.warning(
+            f"Cannot read {module_path} — skipping version check"
+        )
+        return None
+
+    # Find libhailort version from .so filename
+    lib_version = None
+    for search_dir in ["/usr/lib/", "/usr/local/lib/"]:
+        for path in glob.glob(os.path.join(search_dir, lib_pattern)):
+            match = re.search(r"libhailort\.so\.(\d+\.\d+\.\d+)", path)
+            if match:
+                lib_version = match.group(1)
+                break
+        if lib_version:
+            break
+
+    if not lib_version:
+        logger.warning("Cannot determine libhailort version — skipping version check")
+        return None
+
+    if kernel_version != lib_version:
+        return (
+            f"HailoRT version mismatch: kernel driver ({module_name}) is v{kernel_version} "
+            f"but libhailort is v{lib_version}. HailoRT requires an exact version match. "
+            f"Ensure HAOS and this container use the same HailoRT version."
+        )
+
+    logger.info(f"HailoRT version match confirmed: v{kernel_version}")
+    return None
+
+
+# ----------------- HailoAsyncInference Class ----------------- #
+class HailoAsyncInference:
+    def __init__(
+        self,
+        hef_path: str,
+        input_store: RequestStore,
+        output_store: ResponseStore,
+        batch_size: int = 1,
+        input_type: Optional[str] = None,
+        output_type: Optional[Dict[str, str]] = None,
+        send_original_frame: bool = False,
+    ) -> None:
+        # Import hailo_platform here (after sys.path has been configured)
+        try:
+            from hailo_platform import (
+                HEF,
+                FormatType,
+                HailoSchedulingAlgorithm,
+                VDevice,
+            )
+        except ModuleNotFoundError:
+            raise RuntimeError(
+                "hailo_platform not found. Ensure HailoRT is installed correctly."
+            )
+
+        self.input_store = input_store
+        self.output_store = output_store
+
+        params = VDevice.create_params()
+        params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+
+        self.hef = HEF(hef_path)
+        self.target = VDevice(params)
+        self.infer_model = self.target.create_infer_model(hef_path)
+        self.infer_model.set_batch_size(batch_size)
+
+        if input_type is not None:
+            self.infer_model.input().set_format_type(getattr(FormatType, input_type))
+
+        if output_type is not None:
+            for output_name, output_type in output_type.items():
+                self.infer_model.output(output_name).set_format_type(
+                    getattr(FormatType, output_type)
+                )
+
+        self.output_type = output_type
+        self.send_original_frame = send_original_frame
+
+    def callback(
+        self,
+        completion_info,
+        bindings_list: List,
+        input_batch: List,
+        request_ids: List[int],
+    ):
+        if completion_info.exception:
+            logger.error(f"Inference error: {completion_info.exception}")
+        else:
+            for i, bindings in enumerate(bindings_list):
+                if len(bindings._output_names) == 1:
+                    result = bindings.output().get_buffer()
+                else:
+                    result = {
+                        name: np.expand_dims(bindings.output(name).get_buffer(), axis=0)
+                        for name in bindings._output_names
+                    }
+                self.output_store.put(request_ids[i], (input_batch[i], result))
+
+    def _create_bindings(self, configured_infer_model) -> object:
+        if self.output_type is None:
+            output_buffers = {
+                output_info.name: np.empty(
+                    self.infer_model.output(output_info.name).shape,
+                    dtype=getattr(
+                        np, str(output_info.format.type).split(".")[1].lower()
+                    ),
+                )
+                for output_info in self.hef.get_output_vstream_infos()
+            }
+        else:
+            output_buffers = {
+                name: np.empty(
+                    self.infer_model.output(name).shape,
+                    dtype=getattr(np, self.output_type[name].lower()),
+                )
+                for name in self.output_type
+            }
+        return configured_infer_model.create_bindings(output_buffers=output_buffers)
+
+    def get_input_shape(self) -> Tuple[int, ...]:
+        return self.hef.get_input_vstream_infos()[0].shape
+
+    def run(self) -> None:
+        job = None
+        with self.infer_model.configure() as configured_infer_model:
+            while True:
+                batch_data = self.input_store.get()
+
+                if batch_data is None:
+                    break
+
+                request_id, frame_data = batch_data
+                preprocessed_batch = [frame_data]
+                request_ids = [request_id]
+                input_batch = preprocessed_batch
+
+                bindings_list = []
+                for frame in preprocessed_batch:
+                    bindings = self._create_bindings(configured_infer_model)
+                    bindings.input().set_buffer(np.array(frame))
+                    bindings_list.append(bindings)
+                configured_infer_model.wait_for_async_ready(timeout_ms=10000)
+                job = configured_infer_model.run_async(
+                    bindings_list,
+                    partial(
+                        self.callback,
+                        input_batch=input_batch,
+                        request_ids=request_ids,
+                        bindings_list=bindings_list,
+                    ),
+                )
+
+            if job is not None:
+                job.wait(100)
+
+
+# ----------------- HailoDetector Class ----------------- #
+class HailoDetector(DetectionApi):
+    type_key = DETECTOR_KEY
+
+    def __init__(self, detector_config: "HailoDetectorConfig"):
+        global ARCH
+        self.disabled = False
+
+        # Step 1: Detect hardware via PCI scan (no hailo import needed)
+        hw_info = detect_hailo_hardware()
+        if hw_info is None:
+            logger.critical("=" * 60)
+            logger.critical("HAILO DETECTOR DISABLED")
+            logger.critical("No Hailo device detected on PCI bus.")
+            logger.critical(
+                "Hailo detection is disabled. Recording and streaming "
+                "will continue but no objects will be detected."
+            )
+            logger.critical("=" * 60)
+            self.disabled = True
+            return
+
+        hardware_family, python_path = hw_info
+
+        # Step 2: Set up correct HailoRT Python path
+        setup_hailort_path(python_path)
+
+        # Step 3: Version check (kernel driver vs userspace lib)
+        version_error = check_hailort_version_match(hardware_family)
+        if version_error:
+            logger.critical("=" * 60)
+            logger.critical("HAILO DETECTOR DISABLED")
+            logger.critical(version_error)
+            logger.critical(
+                "Hailo detection is disabled. Recording and streaming "
+                "will continue but no objects will be detected. "
+                "Update HAOS or this container so versions match, then restart."
+            )
+            logger.critical("=" * 60)
+            self.disabled = True
+            return
+
+        # Step 4: Detect specific architecture (hailo8, hailo8l, or hailo10h)
+        if detector_config.hailo_arch:
+            ARCH = detector_config.hailo_arch
+            logger.info(f"Using configured Hailo architecture: {ARCH}")
+        else:
+            ARCH = detect_hailo_arch(hardware_family)
+            logger.info(f"Auto-detected Hailo architecture: {ARCH}")
+
+        self.cache_dir = MODEL_CACHE_DIR
+        self.device_type = detector_config.device
+        self.model_height = (
+            detector_config.model.height
+            if hasattr(detector_config.model, "height")
+            else None
+        )
+        self.model_width = (
+            detector_config.model.width
+            if hasattr(detector_config.model, "width")
+            else None
+        )
+        self.model_type = (
+            detector_config.model.model_type
+            if hasattr(detector_config.model, "model_type")
+            else None
+        )
+        self.tensor_format = (
+            detector_config.model.input_tensor
+            if hasattr(detector_config.model, "input_tensor")
+            else None
+        )
+        self.pixel_format = (
+            detector_config.model.input_pixel_format
+            if hasattr(detector_config.model, "input_pixel_format")
+            else None
+        )
+        self.input_dtype = (
+            detector_config.model.input_dtype
+            if hasattr(detector_config.model, "input_dtype")
+            else None
+        )
+        self.output_type = "FLOAT32"
+        self.set_path_and_url(detector_config.model.path)
+        self.working_model_path = self.check_and_prepare()
+
+        self.batch_size = 1
+        self.input_store = RequestStore()
+        self.response_store = ResponseStore()
+
+        try:
+            logger.debug(f"[INIT] Loading HEF model from {self.working_model_path}")
+            self.inference_engine = HailoAsyncInference(
+                self.working_model_path,
+                self.input_store,
+                self.response_store,
+                self.batch_size,
+            )
+            self.input_shape = self.inference_engine.get_input_shape()
+            logger.debug(f"[INIT] Model input shape: {self.input_shape}")
+            self.inference_thread = threading.Thread(
+                target=self.inference_engine.run, daemon=True
+            )
+            self.inference_thread.start()
+        except Exception as e:
+            logger.error(f"[INIT] Failed to initialize HailoAsyncInference: {e}")
+            raise
+
+    def set_path_and_url(self, path: str = None):
+        if not path:
+            self.model_path = None
+            self.url = None
+            return
+        if self.is_url(path):
+            self.url = path
+            self.model_path = None
+        else:
+            self.model_path = path
+            self.url = None
+
+    def is_url(self, url: str) -> bool:
+        return (
+            url.startswith("http://")
+            or url.startswith("https://")
+            or url.startswith("www.")
+        )
+
+    @staticmethod
+    def extract_model_name(path: str = None, url: str = None) -> str:
+        if path and path.endswith(".hef"):
+            return os.path.basename(path)
+        elif url and url.endswith(".hef"):
+            return os.path.basename(url)
+        else:
+            if ARCH == "hailo8":
+                return H8_DEFAULT_MODEL
+            elif ARCH == "hailo10h":
+                return H10H_DEFAULT_MODEL
+            else:
+                return H8L_DEFAULT_MODEL
+
+    @staticmethod
+    def download_model(url: str, destination: str):
+        if not url.endswith(".hef"):
+            raise ValueError("Invalid model URL. Only .hef files are supported.")
+        try:
+            urllib.request.urlretrieve(url, destination)
+            logger.debug(f"Downloaded model to {destination}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to download model from {url}: {str(e)}")
+
+    def check_and_prepare(self) -> str:
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir)
+        model_name = self.extract_model_name(self.model_path, self.url)
+        cached_model_path = os.path.join(self.cache_dir, model_name)
+        if not self.model_path and not self.url:
+            if os.path.exists(cached_model_path):
+                logger.debug(f"Model found in cache: {cached_model_path}")
+                return cached_model_path
+            else:
+                logger.debug(f"Downloading default model: {model_name}")
+                if ARCH == "hailo8":
+                    self.download_model(H8_DEFAULT_URL, cached_model_path)
+                elif ARCH == "hailo10h":
+                    self.download_model(H10H_DEFAULT_URL, cached_model_path)
+                else:
+                    self.download_model(H8L_DEFAULT_URL, cached_model_path)
+        elif self.url:
+            logger.debug(f"Downloading model from URL: {self.url}")
+            self.download_model(self.url, cached_model_path)
+        elif self.model_path:
+            if os.path.exists(self.model_path):
+                logger.debug(f"Using existing model at: {self.model_path}")
+                return self.model_path
+            else:
+                raise FileNotFoundError(f"Model file not found at: {self.model_path}")
+        return cached_model_path
+
+    def detect_raw(self, tensor_input):
+        if self.disabled:
+            return np.zeros((20, 6), dtype=np.float32)
+
+        tensor_input = self.preprocess(tensor_input)
+
+        if isinstance(tensor_input, np.ndarray) and len(tensor_input.shape) == 3:
+            tensor_input = np.expand_dims(tensor_input, axis=0)
+
+        request_id = self.input_store.put(tensor_input)
+
+        try:
+            _, infer_results = self.response_store.get(request_id, timeout=1.0)
+        except TimeoutError:
+            logger.error(
+                f"Timeout waiting for inference results for request {request_id}"
+            )
+
+            if not self.inference_thread.is_alive():
+                raise RuntimeError(
+                    "HailoRT inference thread has stopped, restart required."
+                )
+
+            return np.zeros((20, 6), dtype=np.float32)
+
+        if isinstance(infer_results, list) and len(infer_results) == 1:
+            infer_results = infer_results[0]
+
+        threshold = 0.4
+        all_detections = []
+        for class_id, detection_set in enumerate(infer_results):
+            if not isinstance(detection_set, np.ndarray) or detection_set.size == 0:
+                continue
+            for det in detection_set:
+                if det.shape[0] < 5:
+                    continue
+                score = float(det[4])
+                if score < threshold:
+                    continue
+                all_detections.append([class_id, score, det[0], det[1], det[2], det[3]])
+
+        if len(all_detections) == 0:
+            detections_array = np.zeros((20, 6), dtype=np.float32)
+        else:
+            detections_array = np.array(all_detections, dtype=np.float32)
+            if detections_array.shape[0] > 20:
+                detections_array = detections_array[:20, :]
+            elif detections_array.shape[0] < 20:
+                pad = np.zeros((20 - detections_array.shape[0], 6), dtype=np.float32)
+                detections_array = np.vstack((detections_array, pad))
+
+        return detections_array
+
+    def preprocess(self, image):
+        if isinstance(image, np.ndarray):
+            processed = preprocess_tensor(
+                image, self.input_shape[1], self.input_shape[0]
+            )
+            return np.expand_dims(processed, axis=0)
+        else:
+            raise ValueError("Unsupported image format for preprocessing")
+
+    def close(self):
+        """Properly shuts down the inference engine and releases the VDevice."""
+        logger.debug("[CLOSE] Closing HailoDetector")
+        try:
+            if hasattr(self, "inference_engine"):
+                if hasattr(self.inference_engine, "target"):
+                    self.inference_engine.target.release()
+                logger.debug("Hailo VDevice released successfully")
+        except Exception as e:
+            logger.error(f"Failed to close Hailo device: {e}")
+            raise
+
+    def __del__(self):
+        """Destructor to ensure cleanup when the object is deleted."""
+        self.close()
+
+
+# ----------------- HailoDetectorConfig Class ----------------- #
+class HailoDetectorConfig(BaseDetectorConfig):
+    """Hailo detector supporting Hailo-8, Hailo-8L, and Hailo-10H accelerators."""
+
+    model_config = ConfigDict(
+        title="Hailo",
+    )
+
+    type: Literal[DETECTOR_KEY]
+    device: str = Field(
+        default="PCIe",
+        title="Device Type",
+        description="The device to use for Hailo inference (e.g. 'PCIe', 'M.2').",
+    )
+    hailo_arch: Optional[str] = Field(
+        default=None,
+        title="Hailo Architecture",
+        description=(
+            "Hailo device architecture: 'hailo8', 'hailo8l', or 'hailo10h'. "
+            "Auto-detected from hardware when not set."
+        ),
+    )
