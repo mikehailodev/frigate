@@ -143,12 +143,15 @@ def detect_hailo_arch(hardware_family: str) -> Optional[str]:
         elif arch_type in (DeviceArchitectureTypes.HAILO8, DeviceArchitectureTypes.HAILO8_A0):
             return "hailo8"
         else:
-            logger.debug(f"Unexpected device architecture type: {arch_type}")
+            logger.error(f"Unexpected device architecture type: {arch_type}")
+            return None
     except Exception as e:
-        logger.debug(f"Could not probe Hailo-8 sub-architecture: {e}")
-
-    # Fallback: assume hailo8l (more common in HA context)
-    return "hailo8l"
+        logger.error(
+            f"Failed to detect Hailo-8 vs Hailo-8L: {e}. "
+            f"Please set 'hailo_arch: hailo8' or 'hailo_arch: hailo8l' "
+            f"in your detector config."
+        )
+        return None
 
 
 def check_hailort_version_match(hardware_family: str) -> Optional[str]:
@@ -391,6 +394,16 @@ class HailoDetector(DetectionApi):
             logger.info(f"Using configured Hailo architecture: {ARCH}")
         else:
             ARCH = detect_hailo_arch(hardware_family)
+            if ARCH is None:
+                logger.critical("=" * 60)
+                logger.critical("HAILO DETECTOR DISABLED")
+                logger.critical(
+                    "Cannot determine device architecture (hailo8 vs hailo8l). "
+                    "Set 'hailo_arch' in your detector config."
+                )
+                logger.critical("=" * 60)
+                self.disabled = True
+                return
             logger.info(f"Auto-detected Hailo architecture: {ARCH}")
 
         self.cache_dir = MODEL_CACHE_DIR
