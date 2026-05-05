@@ -143,7 +143,7 @@ def detect_hailo_arch(hardware_family: str) -> Optional[str]:
                 return "hailo8"
         target.release()
     except Exception as e:
-        logger.warning(f"Could not detect Hailo-8 sub-architecture: {e}")
+        logger.debug(f"Could not probe Hailo-8 sub-architecture: {e}")
 
     # Fallback: assume hailo8l (more common in HA context)
     return "hailo8l"
