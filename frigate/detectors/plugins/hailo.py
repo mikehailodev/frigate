@@ -392,7 +392,6 @@ class HailoDetector(DetectionApi):
         else:
             ARCH = detect_hailo_arch(hardware_family)
             logger.info(f"Auto-detected Hailo architecture: {ARCH}")
-            logger.info(f"Auto-detected Hailo architecture: {ARCH}")
 
         self.cache_dir = MODEL_CACHE_DIR
         self.device_type = detector_config.device
@@ -622,8 +621,7 @@ class HailoDetectorConfig(BaseDetectorConfig):
         title="Hailo Architecture",
         description=(
             "Hailo device architecture: 'hailo8', 'hailo8l', or 'hailo10h'. "
-            "Auto-detected from hardware when not set. "
-            "Must be set explicitly when multi_process_service is true."
+            "Auto-detected from hardware when not set."
         ),
     )
     multi_process_service: bool = Field(
