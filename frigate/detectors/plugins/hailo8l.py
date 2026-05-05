@@ -54,11 +54,11 @@ class Hailo8lDetectorConfig(BaseDetectorConfig):
         description="The device to use for Hailo inference (e.g. 'PCIe', 'M.2').",
     )
     hailo_arch: Optional[str] = Field(
-        default="hailo8l",
+        default=None,
         title="Hailo Architecture",
         description=(
             "Hailo device architecture: 'hailo8' or 'hailo8l'. "
-            "Defaults to 'hailo8l' for this deprecated detector type."
+            "Auto-detected from hardware when not set."
         ),
     )
     multi_process_service: bool = Field(
