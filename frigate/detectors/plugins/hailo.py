@@ -5,6 +5,7 @@ import re
 import sys
 import threading
 import urllib.request
+from collections import deque
 from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -308,13 +309,20 @@ class HailoAsyncInference:
         return self.hef.get_input_vstream_infos()[0].shape
 
     def run(self) -> None:
-        job = None
+        MAX_PENDING_JOBS = 8
+        pending_jobs = deque()
+
         with self.infer_model.configure() as configured_infer_model:
             while True:
                 batch_data = self.input_store.get()
 
                 if batch_data is None:
                     break
+
+                # Drain completed jobs to stay under the cap
+                while len(pending_jobs) >= MAX_PENDING_JOBS:
+                    oldest = pending_jobs.popleft()
+                    oldest.wait(10000)
 
                 request_id, frame_data = batch_data
                 preprocessed_batch = [frame_data]
@@ -336,9 +344,11 @@ class HailoAsyncInference:
                         bindings_list=bindings_list,
                     ),
                 )
+                pending_jobs.append(job)
 
-            if job is not None:
-                job.wait(100)
+            # Wait for all remaining jobs to complete
+            for job in pending_jobs:
+                job.wait(10000)
 
 
 # ----------------- HailoDetector Class ----------------- #
@@ -580,6 +590,7 @@ class HailoDetector(DetectionApi):
         if len(all_detections) == 0:
             detections_array = np.zeros((20, 6), dtype=np.float32)
         else:
+            all_detections.sort(key=lambda x: x[1], reverse=True)
             detections_array = np.array(all_detections, dtype=np.float32)
             if detections_array.shape[0] > 20:
                 detections_array = detections_array[:20, :]
