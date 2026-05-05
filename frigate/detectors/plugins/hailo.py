@@ -128,20 +128,22 @@ def detect_hailo_arch(hardware_family: str) -> Optional[str]:
         return "hailo10h"
 
     # For Hailo-8 family, query the device to distinguish 8 vs 8L
+    # Use Device.control.identify().device_architecture (DeviceArchitectureTypes enum)
     try:
-        from hailo_platform import VDevice
+        from hailo_platform import Device
+        from hailo_platform.pyhailort.pyhailort import DeviceArchitectureTypes
 
-        params = VDevice.create_params()
-        target = VDevice(params)
-        physical_devices = target.get_physical_devices()
-        if physical_devices:
-            arch = str(physical_devices[0].get_architecture())
-            target.release()
-            if "HAILO8L" in arch:
-                return "hailo8l"
-            elif "HAILO8" in arch:
-                return "hailo8"
-        target.release()
+        device = Device()
+        board_info = device.control.identify()
+        arch_type = board_info.device_architecture
+        device.release()
+
+        if arch_type == DeviceArchitectureTypes.HAILO8L:
+            return "hailo8l"
+        elif arch_type in (DeviceArchitectureTypes.HAILO8, DeviceArchitectureTypes.HAILO8_A0):
+            return "hailo8"
+        else:
+            logger.debug(f"Unexpected device architecture type: {arch_type}")
     except Exception as e:
         logger.debug(f"Could not probe Hailo-8 sub-architecture: {e}")
 
