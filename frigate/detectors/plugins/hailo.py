@@ -387,12 +387,19 @@ class HailoDetector(DetectionApi):
         if detector_config.hailo_arch:
             ARCH = detector_config.hailo_arch
             logger.info(f"Using configured Hailo architecture: {ARCH}")
+        elif self.multi_process_service:
+            # In multi-process mode, VDevice is routed through the service
+            # so we can't probe device properties directly. Use PCI scan result:
+            # hailo10h is exact; hailo8_family defaults to hailo8l (most common).
+            if hardware_family == "hailo10h":
+                ARCH = "hailo10h"
+            else:
+                ARCH = "hailo8l"
+            logger.info(
+                f"Multi-process mode: using architecture '{ARCH}' from PCI scan "
+                f"(set hailo_arch explicitly if this is incorrect)"
+            )
         else:
-            if self.multi_process_service:
-                raise ValueError(
-                    "hailo_arch must be set when multi_process_service is true "
-                    "(auto-detection requires direct device access)"
-                )
             ARCH = detect_hailo_arch(hardware_family)
             logger.info(f"Auto-detected Hailo architecture: {ARCH}")
 
