@@ -211,6 +211,7 @@ class HailoAsyncInference:
         input_type: Optional[str] = None,
         output_type: Optional[Dict[str, str]] = None,
         send_original_frame: bool = False,
+        multi_process_service: bool = False,
     ) -> None:
         # Import hailo_platform here (after sys.path has been configured)
         try:
@@ -230,6 +231,15 @@ class HailoAsyncInference:
 
         params = VDevice.create_params()
         params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+
+        if multi_process_service:
+            params.multi_process_service = True
+            params.group_id = "SHARED"
+            svc_addr = os.environ.get("HAILORT_SERVICE_ADDRESS", "default")
+            logger.info(
+                f"Using HailoRT multi-process service "
+                f"(group_id=SHARED, address={svc_addr})"
+            )
 
         self.hef = HEF(hef_path)
         self.target = VDevice(params)
@@ -333,6 +343,11 @@ class HailoDetector(DetectionApi):
     def __init__(self, detector_config: "HailoDetectorConfig"):
         global ARCH
         self.disabled = False
+        self.multi_process_service = detector_config.multi_process_service
+
+        # Set service address early (before any hailo imports or forks)
+        if self.multi_process_service:
+            os.environ["HAILORT_SERVICE_ADDRESS"] = detector_config.service_address
 
         # Step 1: Detect hardware via PCI scan (no hailo import needed)
         hw_info = detect_hailo_hardware()
@@ -373,6 +388,11 @@ class HailoDetector(DetectionApi):
             ARCH = detector_config.hailo_arch
             logger.info(f"Using configured Hailo architecture: {ARCH}")
         else:
+            if self.multi_process_service:
+                raise ValueError(
+                    "hailo_arch must be set when multi_process_service is true "
+                    "(auto-detection requires direct device access)"
+                )
             ARCH = detect_hailo_arch(hardware_family)
             logger.info(f"Auto-detected Hailo architecture: {ARCH}")
 
@@ -423,6 +443,7 @@ class HailoDetector(DetectionApi):
                 self.input_store,
                 self.response_store,
                 self.batch_size,
+                multi_process_service=self.multi_process_service,
             )
             self.input_shape = self.inference_engine.get_input_shape()
             logger.debug(f"[INIT] Model input shape: {self.input_shape}")
@@ -603,6 +624,33 @@ class HailoDetectorConfig(BaseDetectorConfig):
         title="Hailo Architecture",
         description=(
             "Hailo device architecture: 'hailo8', 'hailo8l', or 'hailo10h'. "
-            "Auto-detected from hardware when not set."
+            "Auto-detected from hardware when not set. "
+            "Must be set explicitly when multi_process_service is true."
         ),
     )
+    multi_process_service: bool = Field(
+        default=False,
+        title="Multi-Process Service",
+        description=(
+            "Use HailoRT multi-process service for shared device access. "
+            "Requires hailort_service running externally (e.g. hailo-service add-on)."
+        ),
+    )
+    service_address: str = Field(
+        default="unix:/share/hailo/hailort_service.sock",
+        title="Service Address",
+        description=(
+            "HailoRT service socket address. "
+            "Only used when multi_process_service is true."
+        ),
+    )
+
+    def model_post_init(self, __context) -> None:
+        """Set HAILORT_SERVICE_ADDRESS early so it's inherited by forked child processes.
+
+        libhailort caches the service address at first import. Setting it here
+        during config parsing ensures it's in the environment before any hailo
+        imports or forks.
+        """
+        if self.multi_process_service:
+            os.environ["HAILORT_SERVICE_ADDRESS"] = self.service_address
