@@ -472,6 +472,20 @@ class HailoDetector(DetectionApi):
             )
             self.inference_thread.start()
         except Exception as e:
+            if self.multi_process_service:
+                logger.critical("=" * 60)
+                logger.critical("HAILO DETECTOR DISABLED")
+                logger.critical(
+                    f"Cannot connect to HailoRT multi-process service: {e}"
+                )
+                logger.critical(
+                    "Ensure the Hailo Service add-on is running before "
+                    "starting Frigate, or set multi_process_service: false "
+                    "in your detector config."
+                )
+                logger.critical("=" * 60)
+                self.disabled = True
+                return
             logger.error(f"[INIT] Failed to initialize HailoAsyncInference: {e}")
             raise
 
