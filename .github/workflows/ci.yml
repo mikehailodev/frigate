@@ -48,3 +48,33 @@ jobs:
           tags: ${{ steps.setup.outputs.image-name }}-amd64
           cache-from: type=registry,ref=${{ steps.setup.outputs.cache-name }}-amd64
           cache-to: type=registry,ref=${{ steps.setup.outputs.cache-name }}-amd64,mode=max
+
+  rpi_build:
+    runs-on: ubuntu-22.04
+    name: RPi (arm64) Build
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo docker image prune -af
+          df -h
+      - name: Set up QEMU and Buildx
+        id: setup
+        uses: ./.github/actions/setup
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push arm64 rpi build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/main/Dockerfile
+          push: true
+          platforms: linux/arm64
+          target: frigate
+          tags: ${{ steps.setup.outputs.image-name }}-rpi
+          cache-from: type=registry,ref=${{ steps.setup.outputs.cache-name }}-rpi
+          cache-to: type=registry,ref=${{ steps.setup.outputs.cache-name }}-rpi,mode=max
