@@ -5,7 +5,6 @@ import re
 import sys
 import threading
 import urllib.request
-from collections import deque
 from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -309,9 +308,6 @@ class HailoAsyncInference:
         return self.hef.get_input_vstream_infos()[0].shape
 
     def run(self) -> None:
-        MAX_PENDING_JOBS = 8
-        pending_jobs = deque()
-
         with self.infer_model.configure() as configured_infer_model:
             while True:
                 batch_data = self.input_store.get()
@@ -319,35 +315,20 @@ class HailoAsyncInference:
                 if batch_data is None:
                     break
 
-                # Drain completed jobs to stay under the cap
-                while len(pending_jobs) >= MAX_PENDING_JOBS:
-                    oldest = pending_jobs.popleft()
-                    oldest.wait(10000)
-
                 request_id, frame_data = batch_data
-                preprocessed_batch = [frame_data]
-                request_ids = [request_id]
-                input_batch = preprocessed_batch
 
-                bindings_list = []
-                for frame in preprocessed_batch:
-                    bindings = self._create_bindings(configured_infer_model)
-                    bindings.input().set_buffer(np.array(frame))
-                    bindings_list.append(bindings)
-                configured_infer_model.wait_for_async_ready(timeout_ms=10000)
+                bindings = self._create_bindings(configured_infer_model)
+                bindings.input().set_buffer(np.array(frame_data))
+
                 job = configured_infer_model.run_async(
-                    bindings_list,
+                    [bindings],
                     partial(
                         self.callback,
-                        input_batch=input_batch,
-                        request_ids=request_ids,
-                        bindings_list=bindings_list,
+                        input_batch=[frame_data],
+                        request_ids=[request_id],
+                        bindings_list=[bindings],
                     ),
                 )
-                pending_jobs.append(job)
-
-            # Wait for all remaining jobs to complete
-            for job in pending_jobs:
                 job.wait(10000)
 
 
