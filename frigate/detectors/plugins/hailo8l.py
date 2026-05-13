@@ -70,14 +70,15 @@ class Hailo8lDetectorConfig(BaseDetectorConfig):
         ),
     )
     service_address: str = Field(
-        default="unix:/share/hailo/hailort_service.sock",
+        default="",
         title="Service Address",
         description=(
-            "HailoRT service socket address. "
+            "HailoRT service socket address. Leave empty to use the system default. "
+            "Set to 'unix:/share/hailo/hailort_service.sock' for HA with hailo-service add-on. "
             "Only used when multi_process_service is true."
         ),
     )
 
     def model_post_init(self, __context) -> None:
-        if self.multi_process_service:
+        if self.multi_process_service and self.service_address:
             os.environ["HAILORT_SERVICE_ADDRESS"] = self.service_address
