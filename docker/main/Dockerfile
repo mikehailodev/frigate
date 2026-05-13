@@ -200,8 +200,9 @@ RUN pip3 wheel --wheel-dir=/wheels -r /requirements-wheels.txt && \
         pip3 wheel --wheel-dir=/wheels -r /requirements-dev.txt; \
     fi
 
-# Install HailoRT & Wheels
+# Install HailoRT
 RUN --mount=type=bind,source=docker/main/install_hailort.sh,target=/deps/install_hailort.sh \
+    --mount=type=bind,source=docker/main/hailort_artifacts,target=/deps/hailort_artifacts \
     /deps/install_hailort.sh
 
 # Collect deps in a single layer
