@@ -50,7 +50,6 @@ def preprocess_tensor(image: np.ndarray, model_w: int, model_h: int) -> np.ndarr
 
 # ----------------- Global Constants ----------------- #
 DETECTOR_KEY = "hailo"
-ARCH = None
 
 # Hailo-8 / Hailo-8L defaults (HailoRT 4.x)
 H8_DEFAULT_MODEL = "yolov6n.hef"
@@ -215,7 +214,6 @@ class HailoAsyncInference:
         batch_size: int = 1,
         input_type: Optional[str] = None,
         output_type: Optional[Dict[str, str]] = None,
-        send_original_frame: bool = False,
         multi_process_service: bool = False,
     ) -> None:
         # Import hailo_platform here (after sys.path has been configured)
@@ -261,7 +259,6 @@ class HailoAsyncInference:
                 )
 
         self.output_type = output_type
-        self.send_original_frame = send_original_frame
 
     def callback(
         self,
@@ -337,8 +334,8 @@ class HailoDetector(DetectionApi):
     type_key = DETECTOR_KEY
 
     def __init__(self, detector_config: "HailoDetectorConfig"):
-        global ARCH
         self.disabled = False
+        self.arch = None
         self.multi_process_service = detector_config.multi_process_service
 
         # Set service address early (before any hailo imports or forks)
@@ -381,11 +378,11 @@ class HailoDetector(DetectionApi):
 
         # Step 4: Detect specific architecture (hailo8, hailo8l, or hailo10h)
         if detector_config.hailo_arch:
-            ARCH = detector_config.hailo_arch
-            logger.info(f"Using configured Hailo architecture: {ARCH}")
+            self.arch = detector_config.hailo_arch
+            logger.info(f"Using configured Hailo architecture: {self.arch}")
         else:
-            ARCH = detect_hailo_arch(hardware_family)
-            if ARCH is None:
+            self.arch = detect_hailo_arch(hardware_family)
+            if self.arch is None:
                 logger.critical("=" * 60)
                 logger.critical("HAILO DETECTOR DISABLED")
                 logger.critical(
@@ -395,7 +392,7 @@ class HailoDetector(DetectionApi):
                 logger.critical("=" * 60)
                 self.disabled = True
                 return
-            logger.info(f"Auto-detected Hailo architecture: {ARCH}")
+            logger.info(f"Auto-detected Hailo architecture: {self.arch}")
 
         self.cache_dir = MODEL_CACHE_DIR
         self.device_type = detector_config.device
@@ -489,16 +486,15 @@ class HailoDetector(DetectionApi):
             or url.startswith("www.")
         )
 
-    @staticmethod
-    def extract_model_name(path: str = None, url: str = None) -> str:
+    def extract_model_name(self, path: str = None, url: str = None) -> str:
         if path and path.endswith(".hef"):
             return os.path.basename(path)
         elif url and url.endswith(".hef"):
             return os.path.basename(url)
         else:
-            if ARCH == "hailo8":
+            if self.arch == "hailo8":
                 return H8_DEFAULT_MODEL
-            elif ARCH == "hailo10h":
+            elif self.arch == "hailo10h":
                 return H10H_DEFAULT_MODEL
             else:
                 return H8L_DEFAULT_MODEL
@@ -524,9 +520,9 @@ class HailoDetector(DetectionApi):
                 return cached_model_path
             else:
                 logger.debug(f"Downloading default model: {model_name}")
-                if ARCH == "hailo8":
+                if self.arch == "hailo8":
                     self.download_model(H8_DEFAULT_URL, cached_model_path)
-                elif ARCH == "hailo10h":
+                elif self.arch == "hailo10h":
                     self.download_model(H10H_DEFAULT_URL, cached_model_path)
                 else:
                     self.download_model(H8L_DEFAULT_URL, cached_model_path)
