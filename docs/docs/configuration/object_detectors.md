@@ -17,7 +17,7 @@ Frigate supports multiple different detectors that work on different types of ha
 **Most Hardware**
 
 - [Coral EdgeTPU](#edge-tpu-detector): The Google Coral EdgeTPU is available in USB, Mini PCIe, and m.2 formats allowing for a wide range of compatibility with devices.
-- [Hailo](#hailo-8): The Hailo8 and Hailo8L AI Acceleration module is available in m.2 format with a HAT for RPi devices, offering a wide range of compatibility with devices.
+- [Hailo](#hailo): The Hailo8 and Hailo8L AI Acceleration module is available in m.2 format with a HAT for RPi devices, offering a wide range of compatibility with devices.
 - <CommunityBadge /> [MemryX](#memryx-mx3): The MX3 Acceleration module is available in m.2 format, offering broad compatibility across various platforms.
 - <CommunityBadge /> [DeGirum](#degirum): Service for using hardware devices in the cloud or locally. Hardware and models provided on the cloud on [their website](https://hub.degirum.com).
 
@@ -282,17 +282,27 @@ Note that due to hardware limitations of the Coral, the labelmap is a subset of 
 
 ---
 
-## Hailo-8
+## Hailo
 
-This detector is available for use with both Hailo-8 and Hailo-8L AI Acceleration Modules. The integration automatically detects your hardware architecture via the Hailo CLI and selects the appropriate default model if no custom model is specified.
+This detector is available for use with both Hailo-8 and Hailo-8L AI Acceleration Modules. The integration automatically detects your hardware architecture and selects the appropriate default model if no custom model is specified.
 
-See the [installation docs](../frigate/installation.md#hailo-8) for information on configuring the Hailo hardware.
+See the [installation docs](../frigate/installation.md#hailo) for information on configuring the Hailo hardware.
 
 :::info
 
 If no custom model is provided, the Hailo detector downloads a default model from the Hailo Model Zoo on first startup. Once cached, the model works fully offline. See [Network Requirements](/frigate/network_requirements#hardware-specific-detector-models) for details.
 
 :::
+
+### Detector Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `type` | | **Required.** Must be `hailo`. The deprecated `hailo8l` type still works but will be removed in a future release. |
+| `device` | `PCIe` | Device interface type. |
+| `hailo_arch` | auto-detected | Set to `hailo8` or `hailo8l` to skip auto-detection. **Required** when using multi-process service mode without passing `/dev/hailo0` to the container. |
+| `multi_process_service` | `true` | Whether to connect via the HailoRT multi-process service. Set to `false` for direct device access (single-process mode). |
+| `service_address` | (empty) | Address of the HailoRT service. Leave empty for default (`unix:/tmp/hailort_unix_socket_*`). In Home Assistant OS, set to `unix:/share/hailo/hailort_service.sock`. |
 
 ### Configuration
 
@@ -329,7 +339,7 @@ The detector automatically selects the default model based on your hardware. Opt
 ```yaml
 detectors:
   hailo:
-    type: hailo8l
+    type: hailo
     device: PCIe
 
 model:
@@ -346,13 +356,10 @@ model:
   # - For Hailo-8L hardware: YOLOv6n (default: yolov6n.hef)
   #
   # Optionally, you can specify a local model path to override the default.
-  # If a local path is provided and the file exists, it will be used instead of downloading.
-  # Example:
   # path: /config/model_cache/hailo/yolov6n.hef
   #
   # You can also override using a custom URL:
   # path: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.14.0/hailo8/yolov6n.hef
-  # just make sure to give it the write configuration based on the model
 ```
 
 </TabItem>
@@ -383,7 +390,7 @@ Specify the local model path or URL for SSD MobileNet v1.
 ```yaml
 detectors:
   hailo:
-    type: hailo8l
+    type: hailo
     device: PCIe
 
 model:
@@ -418,7 +425,7 @@ Navigate to <NavPath path="Settings > System > Detector hardware" /> and select 
 ```yaml
 detectors:
   hailo:
-    type: hailo8l
+    type: hailo
     device: PCIe
 
 model:

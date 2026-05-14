@@ -198,7 +198,7 @@ hardware:
 
   - id: "hailo"
     label: "Hailo NPU (/dev/hailo0)"
-    description: "Pass through /dev/hailo0 for Hailo-8 / Hailo-8L NPU acceleration. You also need to [install the driver](#hailo-8)."
+    description: "Pass through /dev/hailo0 for Hailo-8 / Hailo-8L NPU acceleration. You also need to [install the driver](#hailo)."
     disabledWhen:
       - "apple-silicon"
       - "stable-synaptics"

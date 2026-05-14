@@ -41,7 +41,7 @@ If you are using one of the following hardware detectors and have not provided y
 | Detector                                                           | Model Downloaded     | Source                   |
 | ------------------------------------------------------------------ | -------------------- | ------------------------ |
 | [Rockchip RKNN](/configuration/object_detectors#rockchip-platform) | RKNN detection model | GitHub                   |
-| [Hailo 8 / 8L](/configuration/object_detectors#hailo-8)            | YOLOv6n (.hef)       | Hailo Model Zoo (AWS S3) |
+| [Hailo 8 / 8L](/configuration/object_detectors#hailo)            | YOLOv6n (.hef)       | Hailo Model Zoo (AWS S3) |
 | [AXERA AXEngine](/configuration/object_detectors)                  | Detection model      | HuggingFace              |
 
 :::note

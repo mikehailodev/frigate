@@ -54,7 +54,7 @@ Frigate supports multiple different detectors that work on different types of ha
 
 **Most Hardware**
 
-- [Hailo](#hailo-8): The Hailo8 and Hailo8L AI Acceleration module is available in m.2 format with a HAT for RPi devices offering a wide range of compatibility with devices.
+- [Hailo](#hailo): The Hailo8 and Hailo8L AI Acceleration module is available in m.2 format with a HAT for RPi devices offering a wide range of compatibility with devices.
   - [Supports many model architectures](../../configuration/object_detectors#configuration)
   - Runs best with tiny or small size models
 
@@ -109,7 +109,7 @@ Frigate supports multiple different detectors that work on different types of ha
 
 :::
 
-### Hailo-8
+### Hailo
 
 Frigate supports both the Hailo-8 and Hailo-8L AI Acceleration Modules on compatible hardware platforms—including the Raspberry Pi 5 with the PCIe hat from the AI kit. The Hailo detector integration in Frigate automatically identifies your hardware type and selects the appropriate default model when a custom model isn’t provided.
 

@@ -96,7 +96,7 @@ By default, the Raspberry Pi limits the amount of memory available to the GPU. I
 
 Additionally, the USB Coral draws a considerable amount of power. If using any other USB devices such as an SSD, you will experience instability due to the Pi not providing enough power to USB devices. You will need to purchase an external USB hub with it's own power supply. Some have reported success with <a href="https://amzn.to/3a2mH0P" target="_blank" rel="nofollow noopener sponsored">this</a> (affiliate link).
 
-### Hailo-8
+### Hailo
 
 The Hailo-8 and Hailo-8L AI accelerators are available in both M.2 and HAT form factors for the Raspberry Pi. The M.2 version typically connects to a carrier board for PCIe, which then interfaces with the Raspberry Pi 5 as part of the AI Kit. The HAT version can be mounted directly onto compatible Raspberry Pi models. Both form factors have been successfully tested on x86 platforms as well, making them versatile options for various computing environments.
 
@@ -263,7 +263,9 @@ On Raspberry Pi OS **Trixie**, the Hailo driver is no longer shipped with the ke
 
 To set up Frigate, follow the default installation instructions, for example: `ghcr.io/blakeblackshear/frigate:stable`
 
-Next, grant Docker permissions to access your hardware by adding the following lines to your `docker-compose.yml` file:
+##### Direct Device Access (Default)
+
+Grant Docker permissions to access your hardware by adding the following lines to your `docker-compose.yml` file:
 
 ```yaml
 devices:
@@ -272,9 +274,50 @@ devices:
 
 If you are using `docker run`, add this option to your command `--device /dev/hailo0`
 
+:::warning
+
+Docker will fail to start the container if `/dev/hailo0` does not exist on the host. Ensure the Hailo driver is installed and the device is present before starting the container.
+
+:::
+
+##### Multi-Process Service Mode
+
+If you run multiple applications that share the Hailo device (e.g., Frigate + a GStreamer pipeline), you need to use the HailoRT multi-process service. In this mode, `hailort_service` runs on the host and arbitrates access to the hardware.
+
+Start the service on the host:
+
+```bash
+sudo hailort_service
+```
+
+Then configure Docker Compose to use shared IPC and the service socket:
+
+```yaml
+services:
+  frigate:
+    ...
+    ipc: host
+    volumes:
+      - /tmp:/tmp
+```
+
+In this mode, you do **not** pass `/dev/hailo0` to the container. The container communicates with the device through the host service via a Unix socket at `/tmp/hailort_unix_socket_*`.
+
+:::note
+
+All applications sharing the device must use multi-process mode. You cannot mix direct-access and multi-process clients on the same device simultaneously.
+
+:::
+
+:::tip
+
+If this is the first time adding `type: hailo` to your Frigate configuration, you must restart the container (`docker compose restart`) for the detector to initialize correctly. A live config reload is not sufficient.
+
+:::
+
 #### Configuration
 
-Finally, configure [hardware object detection](/configuration/object_detectors#hailo-8) to complete the setup.
+Finally, configure [hardware object detection](/configuration/object_detectors#hailo) to complete the setup.
 
 ### MemryX MX3
 
